@@ -4,6 +4,7 @@ import type {EmptyStateButton, HeaderMedia} from '@components/EmptyStateComponen
 import useTabRootScrollProps from '@components/Navigation/TabBarBottomContent/useTabRootScrollProps';
 import {useRegisterSearchScrollView, useSearchListScrollLockStyle} from '@components/Search/SearchListScrollLockContext';
 import {SearchScopeProvider} from '@components/Search/SearchScopeProvider';
+import {useSearchQueryContext} from '@components/Search/SearchContext';
 import type {SearchQueryJSON} from '@components/Search/types';
 import Text from '@components/Text';
 import TextLink from '@components/TextLink';
@@ -21,6 +22,7 @@ import useSearchTypeMenuSections from '@hooks/useSearchTypeMenuSections';
 import useThemeStyles from '@hooks/useThemeStyles';
 
 import {startMoneyRequest} from '@libs/actions/IOU/MoneyRequest';
+import {setSearchContext} from '@libs/actions/Search';
 import {createNewReport} from '@libs/actions/Report';
 import {startTestDrive} from '@libs/actions/Tour';
 import DateUtils from '@libs/DateUtils';
@@ -29,7 +31,7 @@ import Navigation from '@libs/Navigation/Navigation';
 import {canSendInvoice, isWorkspaceProvisionedForTravel} from '@libs/PolicyUtils';
 import {generateReportID} from '@libs/ReportUtils';
 import {TODO_SEARCH_KEYS} from '@libs/SearchKeyUtils';
-import {getAllPolicyValues, getFilterFromQuery, isDefaultExpenseReportsQuery, isDefaultExpensesQuery, isSearchBeforeViolationsSnapshotStarted} from '@libs/SearchQueryUtils';
+import {buildQueryStringWithResetFilters, getAllPolicyValues, getFilterFromQuery, hasFiltersChangedFromDefault, isDefaultExpenseReportsQuery, isDefaultExpensesQuery, isSearchBeforeViolationsSnapshotStarted} from '@libs/SearchQueryUtils';
 import type {SearchTypeMenuSection} from '@libs/SearchUIUtils';
 
 import CONST from '@src/CONST';
@@ -44,7 +46,7 @@ import type {OnyxCollection, OnyxEntry} from 'react-native-onyx';
 
 import {hasSeenTourSelector, isTrackIntentUserSelector} from '@selectors/Onboarding';
 import {validTransactionDraftIDsSelector} from '@selectors/TransactionDraft';
-import React from 'react';
+import React, {useCallback, useMemo} from 'react';
 import {Linking, View} from 'react-native';
 import Animated from 'react-native-reanimated';
 
@@ -159,6 +161,23 @@ function EmptySearchViewContent({
     });
     const [isTrackIntentUser] = useOnyx(ONYXKEYS.NVP_INTRO_SELECTED, {selector: isTrackIntentUserSelector});
     const [rules] = useOnyx(ONYXKEYS.COLLECTION.RULE);
+
+    // Check if filters are active and can be reset, to show a "Reset filters" button in the empty state
+    const {currentSearchQueryJSON: currentQueryJSON, currentDefaultSearchQueryJSON: defaultQueryJSON} = useSearchQueryContext();
+    const canReset = useMemo(() => {
+        if (!currentQueryJSON || !defaultQueryJSON) {
+            return false;
+        }
+        return hasFiltersChangedFromDefault(currentQueryJSON, defaultQueryJSON);
+    }, [currentQueryJSON, defaultQueryJSON]);
+
+    const resetFilters = useCallback(() => {
+        if (!currentQueryJSON || !defaultQueryJSON) {
+            return;
+        }
+        Navigation.setParams({q: buildQueryStringWithResetFilters(currentQueryJSON, defaultQueryJSON), rawQuery: undefined});
+        setSearchContext(false);
+    }, [currentQueryJSON, defaultQueryJSON]);
 
     const filteredPolicyID = getFilterFromQuery(queryJSON, CONST.SEARCH.SYNTAX_FILTER_KEYS.POLICY_ID);
     let isFilteredWorkspaceAccessible = true;
@@ -422,6 +441,17 @@ function EmptySearchViewContent({
             title: translate('search.searchResults.emptyResults.title'),
             subtitle: translate('search.searchResults.emptyResults.subtitle'),
         };
+    }
+
+    // If filters are active and can be reset, add a "Reset filters" button to the empty state
+    if (canReset) {
+        const resetButton: EmptyStateButton = {
+            buttonText: translate('search.searchResults.resetFilters'),
+            sentryLabel: CONST.SENTRY_LABEL.SEARCH.EMPTY_STATE.RESET_FILTERS,
+            buttonAction: resetFilters,
+            buttonVariant: CONST.BUTTON_VARIANT.SUCCESS,
+        };
+        content.buttons = [...(content.buttons ?? []), resetButton];
     }
 
     return (
