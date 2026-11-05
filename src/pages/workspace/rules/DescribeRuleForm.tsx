@@ -300,6 +300,10 @@ function DescribeRuleForm({
     // the content, therefore the submit button below the input also stays in view when it fits.
     const scrollToInput = () => formRef.current?.scrollTo(inputTopOffsetRef.current);
 
+    // When the user types while the input is already focused but scrolled out of view (e.g. after manually scrolling up),
+    // onFocus does not fire again. Re-scroll on content size change so the caret stays visible.
+    const handleContentSizeChange = () => scrollToInput();
+
     const describeSuggestedRule = (suggestedPrompt: string) => {
         Log.info('[GenerateRule] Tried the suggested description', false, {policyID, generationID: refusal?.generationID, reason: refusal?.reason});
         formRef.current?.resetForm({[INPUT_IDS.PROMPT]: suggestedPrompt});
@@ -361,6 +365,7 @@ function DescribeRuleForm({
                     role={CONST.ROLE.PRESENTATION}
                     onKeyPress={submitFormOnModEnter}
                     onFocus={scrollToInput}
+                    onContentSizeChange={handleContentSizeChange}
                     maxLength={CONST.GENERATED_RULE.PROMPT_MAX_LENGTH}
                     multiline
                     shouldSaveDraft
