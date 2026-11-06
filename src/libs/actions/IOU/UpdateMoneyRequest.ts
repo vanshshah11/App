@@ -3,6 +3,7 @@ import type {CurrencyListActionsContextType} from '@hooks/useCurrencyList';
 import * as API from '@libs/API';
 import type {UpdateMoneyRequestParams} from '@libs/API/parameters';
 import {WRITE_COMMANDS} from '@libs/API/types';
+import {resolveUpdateMoneyRequestDuplicationConflictAction} from '@libs/actions/RequestConflictUtils';
 import DistanceRequestUtils from '@libs/DistanceRequestUtils';
 import {getMicroSecondOnyxErrorWithTranslationKey} from '@libs/ErrorUtils';
 import {getChangedTagLevels} from '@libs/MerchantRuleSuggestionUtils';
@@ -117,6 +118,47 @@ type SearchSnapshotUpdateParams = {
     optimisticViolations?: OnyxEntry<OnyxTypes.TransactionViolations>;
     currentTransactionViolations?: OnyxEntry<OnyxTypes.TransactionViolations>;
 };
+
+/**
+ * Builds a field-scoped revert value for a failed queued write, restoring ONLY the pre-edit values of
+ * the fields the command changed (plus no other keys).
+ *
+ * The previous code spread the WHOLE queued `transaction` snapshot (`...transaction`) into the failure
+ * merge for UPDATE_MONEY_REQUEST_* / UPDATE_TRACK_EXPENSE, which clobbered edits made AFTER the write was
+ * queued — e.g. a receipt attached or a new description typed while a merchant write was retrying — because
+ * it stamped the stale snapshot's value for every key, overwriting the live Onyx transaction (#106153).
+ *
+ * This mirrors `getClearedPendingFields`'s field-scoped approach: enumerate the keys of `transactionChanges`
+ * and, for each one present on the queued snapshot, copy that single field's pre-edit value back. Fields the
+ * command never touched are left alone, so later edits survive the revert. `undefined`/missing values are
+ * skipped because Onyx MERGE treats `undefined` as a no-op (it would not reset the key).
+ */
+function getChangedFieldsRevert(transaction: OnyxEntry<OnyxTypes.Transaction>, transactionChanges: TransactionChanges): Partial<OnyxTypes.Transaction> {
+    const revert: Partial<OnyxTypes.Transaction> = {};
+    if (!transaction) {
+        return revert;
+    }
+    for (const changedField of Object.keys(transactionChanges)) {
+        if (changedField in transaction) {
+            const value = transaction[changedField as keyof OnyxTypes.Transaction];
+            if (value !== undefined) {
+                revert[changedField as keyof OnyxTypes.Transaction] = value;
+            }
+        }
+    }
+    return revert;
+}
+
+/**
+ * Builds the conflict resolver that coalesces queued UPDATE_MONEY_REQUEST_* writes for the same transaction
+ * to the latest edit (#106153), so at most one field-scoped revert can fire per transaction.
+ */
+function getUpdateMoneyRequestConflictResolver(transactionID: string) {
+    return {
+        checkAndFixConflictingRequest: (persistedRequests: Parameters<typeof resolveUpdateMoneyRequestDuplicationConflictAction>[0]) =>
+            resolveUpdateMoneyRequestDuplicationConflictAction(persistedRequests, transactionID),
+    };
+}
 
 /**
  * Builds Onyx writes for the Search snapshot.
@@ -355,7 +397,7 @@ function updateMoneyRequestDate({
         removeTransactionFromDuplicateTransactionViolation(data.onyxData, transactionID, transactions, transactionViolations);
     }
     const {params, onyxData} = data;
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DATE, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DATE, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 /**
@@ -447,7 +489,7 @@ function updateMoneyRequestBillable({
         rules,
     });
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.BILLABLE);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_BILLABLE, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_BILLABLE, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.BILLABLE,
@@ -533,7 +575,7 @@ function updateMoneyRequestReimbursable({
         rules,
     });
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.REIMBURSABLE);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_REIMBURSABLE, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_REIMBURSABLE, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.REIMBURSABLE,
@@ -637,7 +679,7 @@ function updateMoneyRequestMerchant({
         });
     }
     const {params, onyxData} = data;
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_MERCHANT, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_MERCHANT, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 /** Updates the attendees list of an expense */
@@ -710,7 +752,7 @@ function updateMoneyRequestAttendees({
         rules,
     });
     const {params, onyxData} = data;
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_ATTENDEES, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_ATTENDEES, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 type UpdateMoneyRequestVendorParams = {
@@ -994,7 +1036,7 @@ function updateMoneyRequestTag({
         editedTagLevels = getChangedTagLevels(getTag(transaction), tag);
     }
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.TAG, editedTagLevels);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAG, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAG, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.TAG,
@@ -1071,7 +1113,7 @@ function updateMoneyRequestTaxAmount({
         getCurrencySymbol,
         rules,
     });
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_AMOUNT, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_AMOUNT, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 type UpdateMoneyRequestTaxRateParams = {
@@ -1152,7 +1194,7 @@ function updateMoneyRequestTaxRate({
     });
 
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.TAX);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_RATE, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_RATE, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.TAX,
@@ -1339,7 +1381,7 @@ function updateMoneyRequestDistance({
         });
     }
 
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 /** Updates the category of an expense */
@@ -1422,7 +1464,7 @@ function updateMoneyRequestCategory({
         rules,
     });
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.CATEGORY);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_CATEGORY, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_CATEGORY, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.CATEGORY,
@@ -1533,7 +1575,7 @@ function updateMoneyRequestDescription({
     const {params, onyxData} = data;
     params.description = parsedComment;
     addMerchantRuleSuggestionRollback(onyxData, transactionID, CONST.MERCHANT_RULE_SUGGESTION_FIELDS.DESCRIPTION);
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DESCRIPTION, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DESCRIPTION, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
     trackMerchantRuleSuggestion({
         transactionID,
         field: CONST.MERCHANT_RULE_SUGGESTION_FIELDS.DESCRIPTION,
@@ -1686,7 +1728,7 @@ function updateMoneyRequestDistanceRate({
     // `taxAmount`, `taxCode`, and optionally `created` only need to be updated in the optimistic data, so we need to remove them from the params
     const {taxAmount, taxCode, created: createdParam, ...paramsWithoutOptimisticOnlyData} = params;
     const paramsForAPI = createdParam ? {...paramsWithoutOptimisticOnlyData, created: createdParam} : paramsWithoutOptimisticOnlyData;
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE_RATE, paramsForAPI, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE_RATE, paramsForAPI, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 type UpdateMoneyRequestAmountAndCurrencyParams = {
@@ -1802,7 +1844,7 @@ function updateMoneyRequestAmountAndCurrency({
         removeTransactionFromDuplicateTransactionViolation(data.onyxData, transactionID, transactions, transactionViolations);
     }
     const {params, onyxData} = data;
-    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_AMOUNT_AND_CURRENCY, params, onyxData);
+    API.write(WRITE_COMMANDS.UPDATE_MONEY_REQUEST_AMOUNT_AND_CURRENCY, params, onyxData, getUpdateMoneyRequestConflictResolver(transactionID));
 }
 
 type GetUpdateMoneyRequestParamsType = {
@@ -2319,12 +2361,18 @@ function getUpdateMoneyRequestParams(params: GetUpdateMoneyRequestParamsType): U
         },
     });
 
-    // Clear out loading states, pending fields, and add the error fields
+    // Clear out loading states, pending fields, and add the error fields.
+    // Revert ONLY the fields this command changed (mirroring getClearedPendingFields's field-scoped
+    // pattern) instead of spreading the whole queued `transaction` snapshot. The whole-snapshot spread
+    // (#106153) clobbered edits made AFTER the write was queued — e.g. a receipt attached or a new
+    // description typed while the merchant write was retrying — because it stamped the stale snapshot's
+    // value for every key, overwriting the live Onyx transaction. A field-scoped revert restores only the
+    // changed field's pre-edit value and leaves every other key (including newer edits) untouched.
     failureData.push({
         onyxMethod: Onyx.METHOD.MERGE,
         key: `${ONYXKEYS.COLLECTION.TRANSACTION}${transactionID}`,
         value: {
-            ...transaction,
+            ...getChangedFieldsRevert(transaction, transactionChanges),
             pendingFields: clearedPendingFields,
             isLoading: false,
             errorFields,
@@ -2787,12 +2835,15 @@ function getUpdateTrackExpenseParams(
         },
     });
 
-    // Clear out loading states, pending fields, and add the error fields
+    // Clear out loading states, pending fields, and add the error fields.
+    // Field-scoped revert (see getUpdateMoneyRequestParams, #106153): spreading the whole queued
+    // `transaction` snapshot here clobbers edits made after the write was queued. Revert only the
+    // fields this command changed.
     failureData.push({
         onyxMethod: Onyx.METHOD.MERGE,
         key: `${ONYXKEYS.COLLECTION.TRANSACTION}${transactionID}`,
         value: {
-            ...transaction,
+            ...getChangedFieldsRevert(transaction, transactionChanges),
             pendingFields: clearedPendingFields,
             isLoading: false,
             errorFields,
@@ -2831,6 +2882,7 @@ function getUpdateTrackExpenseParams(
 export {
     getUpdateMoneyRequestParams,
     getUpdateTrackExpenseParams,
+    getChangedFieldsRevert,
     updateMoneyRequestDate,
     updateMoneyRequestBillable,
     updateMoneyRequestReimbursable,

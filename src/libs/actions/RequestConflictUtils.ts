@@ -431,6 +431,51 @@ function resolveVacationDelegateDeletionConflicts<TKey extends OnyxKey>(persiste
     };
 }
 
+/**
+ * Conflict-dedup matcher for UPDATE_MONEY_REQUEST_* commands (#106153).
+ *
+ * When a queued UPDATE_MONEY_REQUEST write for a transaction exhausts retries, the queue applies its
+ * failureData revert. If a second update for the SAME transaction was already queued behind it, sending
+ * both would apply two reverts — the earlier one stamping stale values for fields the later edit already
+ * changed. Coalescing to the latest queued update for a given transactionID (mirroring the field-scoped
+ * revert that limits how much each revert can undo) avoids overlapping reverts: only the newest queued
+ * edit runs, so at most one field-scoped revert can fire for that transaction.
+ *
+ * This follows the existing `resolveDuplicationConflictAction` pattern: it finds the first persisted
+ * request for the same WRITE_COMMANDS.UPDATE_MONEY_REQUEST family targeting `transactionID` and replaces
+ * it, so only the latest edit survives in the queue.
+ */
+function createUpdateMoneyRequestMatcher(transactionID: string) {
+    const updateMoneyRequestCommands = new Set<string>([
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_AMOUNT_AND_CURRENCY,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_ATTENDEES,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_BILLABLE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_CATEGORY,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DATE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DESCRIPTION,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_DISTANCE_RATE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_MERCHANT,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_REIMBURSABLE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAG,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_AMOUNT,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_TAX_RATE,
+        WRITE_COMMANDS.UPDATE_MONEY_REQUEST_VENDOR,
+    ]);
+    return function (request: AnyRequest) {
+        return updateMoneyRequestCommands.has(request.command) && request.data?.transactionID === transactionID;
+    };
+}
+
+/**
+ * Resolves a duplicate UPDATE_MONEY_REQUEST_* conflict for the same transactionID by replacing the
+ * existing queued request with the incoming one (latest edit wins). Pushes if no match exists.
+ */
+function resolveUpdateMoneyRequestDuplicationConflictAction(persistedRequests: AnyRequest[], transactionID: string): ConflictActionData {
+    return resolveDuplicationConflictAction(persistedRequests, createUpdateMoneyRequestMatcher(transactionID));
+}
+
 export {
     resolveDuplicationConflictAction,
     resolveOpenAppDuplicationConflictAction,
@@ -446,6 +491,8 @@ export {
     resolveEnableFeatureConflicts,
     enablePolicyFeatureCommand,
     resolveVacationDelegateDeletionConflicts,
+    createUpdateMoneyRequestMatcher,
+    resolveUpdateMoneyRequestDuplicationConflictAction,
 };
 
 export type {EnablePolicyFeatureCommand, AnyRequestMatcher};

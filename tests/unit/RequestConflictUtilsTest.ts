@@ -7,6 +7,7 @@ import {
     resolveOpenAppDuplicationConflictAction,
     resolveOpenReportDuplicationConflictAction,
     resolveReconnectDuplicationConflictAction,
+    resolveUpdateMoneyRequestDuplicationConflictAction,
     resolveVacationDelegateDeletionConflicts,
 } from '@libs/actions/RequestConflictUtils';
 import {WRITE_COMMANDS} from '@libs/API/types';
@@ -465,6 +466,49 @@ describe('RequestConflictUtils', () => {
             ['an OpenApp is queued and the caller opted out', [openApp()], null, false, replaceQueued(0)],
         ])('%s', (_case, persistedRequests: AnyRequest[], ongoingRequest: AnyRequest | null, shouldDedupeWithInFlight: boolean, expected) => {
             expect(resolveOpenAppDuplicationConflictAction(persistedRequests, ongoingRequest, shouldDedupeWithInFlight)).toEqual(expected);
+        });
+    });
+
+    describe('resolveUpdateMoneyRequestDuplicationConflictAction', () => {
+        it('pushes when no UPDATE_MONEY_REQUEST_* for the same transactionID is queued', () => {
+            // Given a queue with unrelated commands and a different transaction's update
+            const persistedRequests: AnyRequest[] = [
+                {command: 'OpenReport', data: {reportID: '1'}},
+                {command: 'UpdateMoneyRequestMerchant', data: {transactionID: 'otherTxn'}},
+            ];
+
+            // When a new update for transactionID 'txnA' is enqueued (latest edit wins)
+            const result = resolveUpdateMoneyRequestDuplicationConflictAction(persistedRequests, 'txnA');
+
+            // Then it pushes because no queued request targets 'txnA'
+            expect(result).toEqual({conflictAction: {type: 'push'}});
+        });
+
+        it('replaces the earlier queued UPDATE_MONEY_REQUEST_* for the same transactionID so only the latest edit runs', () => {
+            // Given two queued updates for the SAME transaction (a merchant edit then a description edit)
+            const persistedRequests: AnyRequest[] = [
+                {command: 'AddComment', data: {reportActionID: '1'}},
+                {command: 'UpdateMoneyRequestMerchant', data: {transactionID: 'txnA'}},
+                {command: 'UpdateMoneyRequestDescription', data: {transactionID: 'txnA'}},
+            ];
+
+            // When a third update (tag) for 'txnA' is enqueued
+            const result = resolveUpdateMoneyRequestDuplicationConflictAction(persistedRequests, 'txnA');
+
+            // Then the FIRST queued update for 'txnA' (the merchant edit at index 1) is replaced by the
+            // newest one, so at most one field-scoped revert can fire for 'txnA' instead of three
+            expect(result).toEqual({conflictAction: {type: 'replace', index: 1}});
+        });
+
+        it('does not match UPDATE_MONEY_REQUEST commands for a different transactionID', () => {
+            // Given a queued merchant update for 'txnA'
+            const persistedRequests: AnyRequest[] = [{command: 'UpdateMoneyRequestMerchant', data: {transactionID: 'txnA'}}];
+
+            // When a new update for a different transaction 'txnB' is enqueued
+            const result = resolveUpdateMoneyRequestDuplicationConflictAction(persistedRequests, 'txnB');
+
+            // Then it pushes because the matcher is keyed on transactionID and 'txnB' is untouched
+            expect(result).toEqual({conflictAction: {type: 'push'}});
         });
     });
 });
