@@ -139,6 +139,8 @@ type MiniReport = {
     displayName: string;
     sortKey: string;
     lastVisibleActionCreated?: string;
+    /** Whether the user explicitly pinned this chat. Drives the pinned/GBR split in sortCategorizedReports (#106235). */
+    isPinned?: boolean;
 };
 
 type ShouldDisplayReportInLHNParams = {
@@ -519,6 +521,7 @@ function categorizeReportsForLHN(
             displayName,
             sortKey: buildSortKey(displayName),
             lastVisibleActionCreated: report.lastVisibleActionCreated,
+            isPinned: !!report.isPinned,
         };
 
         const isPinned = !!report.isPinned;
@@ -601,8 +604,19 @@ function sortCategorizedReports(
 
     const sortIfNeeded = <T>(arr: T[], compareFn: (a: T, b: T) => number): T[] => (arr.length < 2 ? arr : arr.sort(compareFn));
 
-    // Sort each group of reports accordingly
-    const sortedPinnedAndGBRReports = sortIfNeeded(pinnedAndGBRReports, compareDisplayNames);
+    // Split the combined pinned/GBR group so the user-pinned run stays contiguous (#106235).
+    // Before this split, user-pinned chats and requiresAttention (GBR) chats shared ONE array sorted by
+    // compareDisplayNames, so the own-workspace chat (requiresAttention) intruded between user-pinned
+    // chats after hydration and broke the user's pinned order. Each sub-group keeps the existing name
+    // comparator (collation/sortKey are unchanged); only the grouping is split so pinned chats render as
+    // one contiguous block, with GBR chats still visible directly below them.
+    const pinnedReports = pinnedAndGBRReports.filter((report) => report.isPinned);
+    const gbrReports = pinnedAndGBRReports.filter((report) => !report.isPinned);
+    const sortedPinnedReports = sortIfNeeded(pinnedReports, compareDisplayNames);
+    const sortedGBRReports = sortIfNeeded(gbrReports, compareDisplayNames);
+    // Preserve the combined array (pinned first, then GBR) so downstream consumers and existing tests
+    // that read `pinnedAndGBRReports` as a single flat list keep working — only its internal order changed.
+    const sortedPinnedAndGBRReports = [...sortedPinnedReports, ...sortedGBRReports];
     const sortedErrorReports = sortIfNeeded(errorReports, compareDisplayNames);
     const sortedDraftReports = sortIfNeeded(draftReports, compareDisplayNames);
 
@@ -662,7 +676,9 @@ function sortReportsToDisplayInLHN(
     const isInFocusMode = priorityMode === CONST.PRIORITY_MODE.GSD;
     const isInDefaultMode = !isInFocusMode;
     // The LHN is split into five distinct groups, and each group is sorted a little differently. The groups will ALWAYS be in this order:
-    // 1. Pinned/GBR - Always sorted by reportDisplayName
+    // 1. Pinned/GBR - Always sorted by reportDisplayName. Internally split (#106235) into a contiguous
+    //    user-pinned run followed by the requiresAttention (GBR) chats, so a GBR chat (e.g. the own-workspace
+    //    chat) can never intrude between two user-pinned chats. Collation/comparator is unchanged.
     // 2. Error reports - Always sorted by reportDisplayName
     // 3. Drafts - Always sorted by reportDisplayName
     // 4. Non-archived reports and settled IOUs

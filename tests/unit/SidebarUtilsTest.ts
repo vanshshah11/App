@@ -4802,6 +4802,81 @@ describe('SidebarUtils', () => {
             });
         });
 
+        describe('pinned/GBR split (#106235)', () => {
+            const mockLocaleCompare = (a: string, b: string) => a.localeCompare(b);
+
+            it('keeps user-pinned chats contiguous when a requiresAttention (GBR) chat would otherwise sort between them', () => {
+                // Given three user-pinned chats and one requiresAttention workspace chat.
+                // Without the split, compareDisplayNames would place the workspace chat ('Xn') between
+                // the pinned chats, breaking the user's pinned order after hydration.
+                const categories = {
+                    pinnedAndGBRReports: [
+                        {reportID: 'pinned-2', displayName: 'Bravo', sortKey: 'bravo', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: true},
+                        {reportID: 'workspace', displayName: 'Xn', sortKey: 'xn', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: false},
+                        {reportID: 'pinned-1', displayName: 'Alpha', sortKey: 'alpha', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: true},
+                        {reportID: 'pinned-3', displayName: 'Charlie', sortKey: 'charlie', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: true},
+                    ],
+                    errorReports: [],
+                    draftReports: [],
+                    nonArchivedReports: [],
+                    archivedReports: [],
+                };
+
+                // When the reports are sorted (default mode — name comparator only for this group)
+                const result = _sortCategorizedReports(categories, true, mockLocaleCompare);
+
+                // Then the three pinned chats stay contiguous and sorted by name...
+                expect(result.pinnedAndGBRReports.filter((r) => r.isPinned).map((r) => r.reportID)).toEqual(['pinned-1', 'pinned-2', 'pinned-3']);
+                // ...and the GBR (requiresAttention) workspace chat renders AFTER the whole pinned run,
+                // not between 'Bravo' and 'Charlie' where its name ('Xn') would otherwise sort
+                expect(result.pinnedAndGBRReports.at(3)?.reportID).toBe('workspace');
+            });
+
+            it('keeps GBR (requiresAttention) chats visible after hydration — below the pinned run, still in the list', () => {
+                // Given one pinned chat and one GBR chat (the own-workspace / requiresAttention chat)
+                const categories = {
+                    pinnedAndGBRReports: [
+                        {reportID: 'pinned-1', displayName: 'Pinned Chat', sortKey: 'pinned chat', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: true},
+                        {reportID: 'gbr-1', displayName: 'AAA Workspace', sortKey: 'aaa workspace', lastVisibleActionCreated: '2024-01-01 10:00:00', isPinned: false},
+                    ],
+                    errorReports: [],
+                    draftReports: [],
+                    nonArchivedReports: [],
+                    archivedReports: [],
+                };
+
+                // When the reports are sorted
+                const result = _sortCategorizedReports(categories, true, mockLocaleCompare);
+
+                // Then both chats are still present (GBR chat did NOT disappear after the split)
+                expect(result.pinnedAndGBRReports).toHaveLength(2);
+                // And the GBR chat sorts below the pinned run even though its name ('AAA Workspace')
+                // would alphabetically come first if both were in one flat array
+                expect(result.pinnedAndGBRReports.map((r) => r.reportID)).toEqual(['pinned-1', 'gbr-1']);
+            });
+
+            it('leaves the layout unchanged when both the pinned and GBR groups are empty', () => {
+                // Given empty pinned/GBR groups (no pinned, no requiresAttention)
+                const categories = {
+                    pinnedAndGBRReports: [],
+                    errorReports: [],
+                    draftReports: [],
+                    nonArchivedReports: [],
+                    archivedReports: [],
+                };
+
+                // When the reports are sorted
+                const result = _sortCategorizedReports(categories, true, mockLocaleCompare);
+
+                // Then every category is empty and unchanged
+                expect(result.pinnedAndGBRReports).toEqual([]);
+                expect(result.errorReports).toEqual([]);
+                expect(result.draftReports).toEqual([]);
+                expect(result.nonArchivedReports).toEqual([]);
+                expect(result.archivedReports).toEqual([]);
+            });
+        });
+
         describe('buildSortKey', () => {
             it('should sort accented characters by Unicode code point, not locale-aware order', () => {
                 // Given names with accented characters
