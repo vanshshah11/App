@@ -49,7 +49,7 @@ function TrainTripDetails({reservation, personalDetails}: TrainTripDetailsProps)
             </MenuItemField>
             <MenuItemField
                 name={translate('common.date')}
-                value={startDate.date}
+                value={DateUtils.formatToLongDateWithWeekday(new Date(reservation.start.date), dateFnsLocale)}
             />
 
             <MenuItem.Root>
