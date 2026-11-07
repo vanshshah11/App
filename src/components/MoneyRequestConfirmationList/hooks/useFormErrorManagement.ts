@@ -272,15 +272,21 @@ function useFormErrorManagement({
         if (routeError) {
             return routeError;
         }
-        // This runs ahead of the split branch below because splits render those same inline fields, so they duplicate the same way.
+        // These errors are surfaced inline on their fields, so we previously returned `undefined` to avoid duplicating
+        // "This field is required" at the bottom of the form. But when the field is scrolled out of view the footer is
+        // the only visible surface, leaving the user with no feedback that submission is blocked. Show a generic summary
+        // above the footer button instead; inline field errors are preserved and the summary clears when formError is
+        // corrected (#106237).
         if (isSuppressedInline(formError)) {
-            return undefined;
+            return translate('common.error.pleaseEnterRequiredFields');
         }
         if (isTypeSplit && !shouldShowReadOnlySplits) {
             // Splits render the debounced value, so the suppression has to be re-checked against it. `formError` clears
             // the instant the user fixes the field while `debouncedFormError` lags by USE_DEBOUNCED_STATE_DELAY, and
             // without this the suppressed error would pop into the footer for that window (#96565).
-            return debouncedFormError && !isSuppressedInline(debouncedFormError) ? translate(debouncedFormError) : undefined;
+            return debouncedFormError && !isSuppressedInline(debouncedFormError)
+                ? translate(debouncedFormError)
+                : translate('common.error.pleaseEnterRequiredFields');
         }
         // Don't show error at the bottom of the form for missing attendees — the field surfaces it inline.
         if (formError === 'violations.missingAttendees') {
